@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/chimera", "crates/chimera-wasm", "crates/chimera-cli", "crates/chimera-vst"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+debug = false
+
+# VST3 / CLAP profile: nih-plug's C-ABI boundary uses catch_unwind, requiring panic = "unwind".
+[profile.release-vst]
+inherits = "release"
+lto = "thin"
+panic = "unwind"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 3

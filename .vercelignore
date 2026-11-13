@@ -1,0 +1,13 @@
+target
+node_modules
+dist
+dist-vst
+out
+*.wav
+.DS_Store
+.git
+src/wasm/chimera.wasm
+crates/chimera/tests/golden
+docs/mockups
+public/shows
+vibe coding news
