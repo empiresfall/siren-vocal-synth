@@ -3,7 +3,7 @@ name = "chimera-vst"
 version.workspace = true
 edition = "2021"
 license.workspace = true
-description = "SIREN physical-modelling vocal & creature synthesizer VST3/CLAP plugin for Ableton Live"
+description = "SIREN physical-modelling 3D vocal & creature synthesizer VST3/CLAP plugin for Ableton Live"
 
 [lib]
 name = "chimera_vst"
@@ -12,6 +12,11 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 chimera = { path = "../chimera" }
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
-nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
 atomic_float = "1"
 parking_lot = "0.12"
+crossbeam-channel = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"

@@ -4,10 +4,12 @@
  */
 import "./ui/styles.css";
 import { initChimera } from "./wasm/chimera.ts";
+import { installVstChromeHooks, isVstPlugin } from "./audio/vstBridge.ts";
 
 const root = document.getElementById("root")!;
 
 async function boot(): Promise<void> {
+  installVstChromeHooks();
   try {
     await initChimera();
   } catch (err) {
@@ -26,6 +28,10 @@ async function boot(): Promise<void> {
   }
   const { mount } = await import("./ui/mount.tsx");
   mount(root);
+  if (isVstPlugin) {
+    const { useStore } = await import("./ui/store.ts");
+    void useStore.getState().start();
+  }
 }
 
 void boot();

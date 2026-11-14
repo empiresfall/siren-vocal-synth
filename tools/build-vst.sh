@@ -4,14 +4,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:$PATH"
 
 INSTALL=0
 if [[ "${1:-}" == "--install" ]]; then
   INSTALL=1
 fi
 
-echo "==> Building SIREN Vocal Synth (chimera-vst, profile=release-vst)..."
+echo "==> Building SIREN 1:1 Web + 3D Head UI bundle (dist/)..."
+bun run build
+
+echo "==> Building SIREN Vocal Synth native plugin (chimera-vst, profile=release-vst)..."
 cargo build --profile release-vst -p chimera-vst
 
 DYLIB="$ROOT/target/release-vst/libchimera_vst.dylib"
@@ -55,11 +58,11 @@ write_bundle() {
   <key>CFBundlePackageType</key>
   <string>BNDL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.2.0</string>
   <key>CFBundleSignature</key>
   <string>????</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>0.2.0</string>
   <key>CSResourcesFileMapped</key>
   <true/>
   <key>NSHighResolutionCapable</key>
@@ -95,4 +98,19 @@ if [[ "$INSTALL" -eq 1 ]]; then
   xattr -cr "$DEST_VST3" 2>/dev/null || true
   codesign --force --deep --sign - "$DEST_VST3"
   echo "==> Installed Ableton Live VST3 plugin to: $DEST_VST3"
+
+  SYS_CLAP="/Library/Audio/Plug-Ins/CLAP"
+  USER_CLAP="$HOME/Library/Audio/Plug-Ins/CLAP"
+  if [[ -d "$SYS_CLAP" && -w "$SYS_CLAP" ]]; then
+    DEST_CLAP="$SYS_CLAP/Siren.clap"
+  else
+    mkdir -p "$USER_CLAP"
+    DEST_CLAP="$USER_CLAP/Siren.clap"
+  fi
+
+  rm -rf "$DEST_CLAP"
+  cp -R "$CLAP_BUNDLE" "$DEST_CLAP"
+  xattr -cr "$DEST_CLAP" 2>/dev/null || true
+  codesign --force --deep --sign - "$DEST_CLAP"
+  echo "==> Installed CLAP plugin to: $DEST_CLAP"
 fi

@@ -8,12 +8,24 @@ import type { ToWorklet, FromWorklet, TelemetryMessage, PlannedMessage, Creature
 import type { BodyMix } from "../wasm/types.ts";
 import type { HumanArtic } from "../wasm/types.ts";
 import type { VoiceSource } from "../wasm/types.ts";
+import {
+  decodeCreatureTelemetry,
+  decodeF32B64,
+  decodeHumanTelemetry,
+  dispatchExtraVstMessage,
+  installVstChromeHooks,
+  isVstPlugin,
+  sendToVst,
+  VstAnalyser,
+  type VstInboundMessage,
+} from "./vstBridge.ts";
 
 type Listener = (t: TelemetryMessage) => void;
 
 export class AudioEngine {
   ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private vstRunning = false;
   analyser: AnalyserNode | null = null;
   /** unsmoothed, short-window analyser for the spectrogram */
   analyserFast: AnalyserNode | null = null;
@@ -55,10 +67,71 @@ export class AudioEngine {
   }
 
   get running(): boolean {
+    if (isVstPlugin) return this.vstRunning;
     return !!this.ctx && this.ctx.state === "running";
   }
 
+  private handleIncomingMessage(m: FromWorklet): void {
+    if (m.type === "telemetry") {
+      this.latest = m;
+      this.latestAt = performance.now();
+      this.latestCreature = null;
+      this.load = m.load;
+      for (const l of this.listeners) l(m);
+    } else if (m.type === "ctelemetry") {
+      this.latestCreature = m;
+      this.latest = null;
+      this.load = m.load;
+    } else if (m.type === "planned") {
+      this.lastPlan = m;
+      for (const l of this.plannedListeners) l(m);
+    } else if (m.type === "ready") {
+      this.sampleRate = m.sampleRate || 48000;
+      for (const l of this.readyListeners) l();
+    } else if (m.type === "recorded") {
+      const t = this.take;
+      if (t) {
+        t.left.push(m.left);
+        t.right.push(m.right);
+        if (m.last) {
+          this.take = null;
+          const wav = encodeWav(t.left, t.right, this.sampleRate);
+          for (const d of t.done) d(wav);
+        }
+      }
+    } else if (m.type === "error") {
+      this.error = m.message;
+      console.error("worklet:", m.message);
+    }
+  }
+
   async start(): Promise<void> {
+    if (isVstPlugin) {
+      if (this.vstRunning) return;
+      installVstChromeHooks();
+      this.analyser = new VstAnalyser(4096, 0.6) as unknown as AnalyserNode;
+      this.analyserFast = new VstAnalyser(2048, 0) as unknown as AnalyserNode;
+      this.vstRunning = true;
+      window.__SIREN_VST__?.onMessage((raw: VstInboundMessage) => {
+        if (dispatchExtraVstMessage(raw)) return;
+        if (raw.type === "vstTelemetry") {
+          this.handleIncomingMessage(decodeHumanTelemetry(raw));
+        } else if (raw.type === "vstCreatureTelemetry") {
+          this.handleIncomingMessage(decodeCreatureTelemetry(raw));
+        } else if (raw.type === "vstRecorded") {
+          this.handleIncomingMessage({
+            type: "recorded",
+            left: decodeF32B64(raw.leftB64),
+            right: decodeF32B64(raw.rightB64),
+            last: raw.last,
+          });
+        } else {
+          this.handleIncomingMessage(raw);
+        }
+      });
+      sendToVst({ type: "vstReady" });
+      return;
+    }
     if (this.ctx) {
       await this.ctx.resume();
       return;
@@ -112,39 +185,7 @@ export class AudioEngine {
     master.connect(analyser);
     master.connect(fast);
     master.connect(scope);
-    node.port.onmessage = (e: MessageEvent<FromWorklet>) => {
-      const m = e.data;
-      if (m.type === "telemetry") {
-        this.latest = m;
-        this.latestAt = performance.now();
-        this.latestCreature = null;
-        this.load = m.load;
-        for (const l of this.listeners) l(m);
-      } else if (m.type === "ctelemetry") {
-        this.latestCreature = m;
-        this.latest = null;
-        this.load = m.load;
-      } else if (m.type === "planned") {
-        this.lastPlan = m;
-        for (const l of this.plannedListeners) l(m);
-      } else if (m.type === "ready") {
-        for (const l of this.readyListeners) l();
-      } else if (m.type === "recorded") {
-        const t = this.take;
-        if (t) {
-          t.left.push(m.left);
-          t.right.push(m.right);
-          if (m.last) {
-            this.take = null;
-            const wav = encodeWav(t.left, t.right, this.sampleRate);
-            for (const d of t.done) d(wav);
-          }
-        }
-      } else if (m.type === "error") {
-        this.error = m.message;
-        console.error("worklet:", m.message);
-      }
-    };
+    node.port.onmessage = (e: MessageEvent<FromWorklet>) => this.handleIncomingMessage(e.data);
     await ctx.resume();
   }
 
@@ -195,6 +236,10 @@ export class AudioEngine {
   }
 
   private send(m: ToWorklet): void {
+    if (isVstPlugin) {
+      if (this.vstRunning) sendToVst(m);
+      return;
+    }
     this.node?.port.postMessage(m);
   }
 
@@ -224,7 +269,7 @@ export class AudioEngine {
 
   /** Start recording what is heard (after the rack, before the volume). */
   startRecording(): void {
-    if (this.take || !this.node) return;
+    if (this.take || (!this.node && !this.vstRunning)) return;
     this.take = { left: [], right: [], done: [] };
     this.send({ type: "record", on: true });
   }
@@ -242,7 +287,10 @@ export class AudioEngine {
   /** Open the microphone for analysis (the head follows it); it is not routed to the output. */
   async openMic(): Promise<AnalyserNode> {
     if (this.micAnalyser) return this.micAnalyser;
-    if (!this.ctx) throw new Error("audio has not started");
+    if (!this.ctx) {
+      const ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+      this.ctx = ctx;
+    }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false } });
     const a = this.ctx.createAnalyser();
     a.fftSize = 2048;
@@ -264,9 +312,13 @@ export class AudioEngine {
   setMic(on: boolean): void {
     if (on === this.micOn) return;
     this.micOn = on;
+    if (isVstPlugin) {
+      if (this.vstRunning) sendToVst({ type: "vstCloseMic", on });
+      return;
+    }
     if (!this.node || !this.master || !this.micIn) return;
     this.node.disconnect();
-    this.node.connect(on ? this.micIn : this.master);
+    nodeConnect(this.node, on ? this.micIn : this.master);
   }
 
   setBeat(m: { steps?: import("../wasm/types.ts").BeatStep[] | (import("../wasm/types.ts").BeatStep | null)[]; bpm?: number; swing?: number; playing?: boolean }): void {
@@ -288,6 +340,10 @@ export class AudioEngine {
   }
 
   setVolume(v: number): void {
+    if (isVstPlugin) {
+      if (this.vstRunning) sendToVst({ type: "vstVolume", value: v });
+      return;
+    }
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
   }
 
@@ -333,6 +389,10 @@ export class AudioEngine {
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
     else setTimeout(flush, 16);
   }
+}
+
+function nodeConnect(node: AudioWorkletNode, dest: AudioNode): void {
+  node.connect(dest);
 }
 
 export const engine = new AudioEngine();

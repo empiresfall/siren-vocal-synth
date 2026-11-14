@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { engine } from "../audio/AudioEngine.ts";
-import { DEFAULT_SOURCE, ENGINES, FX, GOLDEN, type EngineKind, type VoiceSource } from "../wasm/engine.ts";
+import { isVstPlugin, registerVstCallbacks, sendToVst } from "../audio/vstBridge.ts";
+import { ARTIC_KEYS, DEFAULT_SOURCE, ENGINES, FX, GOLDEN, VOWEL_TARGETS, type EngineKind, type VoiceSource } from "../wasm/engine.ts";
 import { NEUTRAL, restTip, type HumanArtic } from "../wasm/engine.ts";
-import { defaultF0, PRESETS, sameBody, type BodyMix } from "./body.ts";
+import { bodyWeights, defaultF0, PRESETS, sameBody, type BodyMix } from "./body.ts";
 import { creatureById } from "../wasm/engine.ts";
 import type { ParamDef } from "../wasm/types.ts";
 import { BEAT_PRESETS, BASS_NOTE, beatReady, parseBeat, type BeatStep } from "../wasm/engine.ts";
@@ -172,9 +173,9 @@ export const useStore = create<State>((set, get) => ({
   volume: 0.8,
   hold: false,
   heldNotes: [],
-  view: { pressure: true, particles: true, grid: false, calipers: true, threeD: false },
-  // the app opens on Sing: hearing a song is the quickest way in (the plugin opens there too)
-  mode: "sing",
+  view: { pressure: true, particles: true, grid: false, calipers: true, threeD: isVstPlugin },
+  // In the browser, open on Sing; in the DAW VST plugin, open on Play with the 3D Head ready for MIDI
+  mode: isVstPlugin ? "play" : "sing",
   engineKind: "airway",
   setEngine: (k) => {
     if (k === get().engineKind) return;
@@ -286,6 +287,12 @@ export const useStore = create<State>((set, get) => ({
     steps[i] = steps[i]?.id === id ? null : id === "m" ? { id, note: get().bassNote } : { id };
     get().setBeatSteps(steps);
   },
+  loadBeatPreset: (name) => {
+    const p = BEAT_PRESETS.find((x) => x.name === name);
+    if (!p) return;
+    get().setBeatSteps(parseBeat(p.text), p.name);
+    get().setBeatTempo({ bpm: p.bpm, swing: p.swing });
+  },
   setBeatTempo: (v) => {
     set((s) => ({ beat: { ...s.beat, ...v } }));
     engine.setBeat(v);
@@ -303,12 +310,6 @@ export const useStore = create<State>((set, get) => ({
         const b = get().beat;
         if (get().started && b.playing) engine.setBeat({ steps: b.steps, bpm: b.bpm, swing: b.swing, playing: true });
       });
-  },
-  loadBeatPreset: (name) => {
-    const p = BEAT_PRESETS.find((x) => x.name === name);
-    if (!p) return;
-    get().setBeatSteps(parseBeat(p.text), p.name);
-    get().setBeatTempo({ bpm: p.bpm, swing: p.swing });
   },
   beatHit: (id) => {
     void get()
@@ -452,8 +453,12 @@ export const useStore = create<State>((set, get) => ({
     updateGate(get());
   },
   setView: (v) => set((s) => ({ view: { ...s.view, ...v } })),
-  midi: { status: "off", inputs: [] },
+  midi: isVstPlugin ? { status: "on", inputs: ["Ableton Live"] } : { status: "off", inputs: [] },
   setMidi: (on) => {
+    if (isVstPlugin) {
+      set({ midi: { status: "on", inputs: ["Ableton Live"] } });
+      return;
+    }
     const noteOff = (n: number) => get().noteOff(n);
     if (!on) {
       disconnectMidi();
@@ -475,3 +480,232 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 }));
+
+// ------------------------------------------------------------------ Bidirectional VST Host Sync
+
+function blendCornerVowel(body: BodyMix, u: number, v: number): Partial<HumanArtic> {
+  const parts = bodyWeights(body)
+    .filter(([, w]) => w > 0)
+    .map(([n, w]) => ({ w, table: VOWEL_TARGETS[n] ?? {} }));
+  const corner = (ipa: string): Partial<HumanArtic> => {
+    const out: Partial<HumanArtic> = {};
+    for (const k of ARTIC_KEYS) {
+      let acc = 0, ws = 0;
+      for (const p of parts) {
+        const val = p.table[ipa]?.artic[k];
+        if (val !== undefined) {
+          acc += p.w * val;
+          ws += p.w;
+        }
+      }
+      if (ws > 0) out[k] = acc / ws;
+    }
+    return out;
+  };
+  const c00 = corner("i"), c10 = corner("u"), c01 = corner("æ"), c11 = corner("ɑ");
+  const w00 = (1 - u) * (1 - v), w10 = u * (1 - v), w01 = (1 - u) * v, w11 = u * v;
+  const out: Partial<HumanArtic> = {};
+  for (const k of ARTIC_KEYS) {
+    out[k] =
+      w00 * (c00[k] ?? NEUTRAL[k]) +
+      w10 * (c10[k] ?? NEUTRAL[k]) +
+      w01 * (c01[k] ?? NEUTRAL[k]) +
+      w11 * (c11[k] ?? NEUTRAL[k]);
+  }
+  return out;
+}
+
+if (isVstPlugin) {
+  let suppressEcho = false;
+  let syncPending = false;
+  let lastModeKey = "";
+
+  registerVstCallbacks({
+    onMidi: (m) => {
+      const s = useStore.getState();
+      if (m.routeToStore) {
+        if (m.on) s.noteOn(m.note, m.velocity);
+        else s.noteOff(m.note);
+        return;
+      }
+      // Audio thread already triggered sample-accurately; reflect held notes & pitch in UI
+      suppressEcho = true;
+      try {
+        const nextHeld = m.on
+          ? s.heldNotes.filter((n) => n !== m.note).concat(m.note)
+          : s.heldNotes.filter((n) => n !== m.note);
+        if (m.on && s.mode === "play") {
+          useStore.setState({
+            heldNotes: nextHeld,
+            source: { ...s.source, f0: midiToHz(m.note) },
+          });
+        } else if (!m.on && nextHeld.length > 0 && s.mode === "play") {
+          useStore.setState({
+            heldNotes: nextHeld,
+            source: { ...s.source, f0: midiToHz(nextHeld[nextHeld.length - 1]) },
+          });
+        } else {
+          useStore.setState({ heldNotes: nextHeld });
+        }
+      } finally {
+        suppressEcho = false;
+      }
+    },
+    onHostParams: (m) => {
+      suppressEcho = true;
+      try {
+        const s = useStore.getState();
+        let nextBody = s.body;
+        if (m.bodyFemale !== undefined || m.bodyChild !== undefined) {
+          nextBody = {
+            female: m.bodyFemale ?? s.body.female,
+            child: m.bodyChild ?? s.body.child,
+          };
+        }
+        const nextSource = { ...s.source };
+        if (m.pressure !== undefined) nextSource.pressure = m.pressure;
+        if (m.breathiness !== undefined) nextSource.breathiness = m.breathiness;
+        if (m.tension !== undefined) nextSource.tension = m.tension;
+        if (m.brightness !== undefined) nextSource.brightness = m.brightness;
+        if (m.fry !== undefined) nextSource.fry = m.fry;
+        if (m.roughness !== undefined) nextSource.roughness = m.roughness;
+        if (m.voiced !== undefined) nextSource.voiced = m.voiced;
+        if (m.vibratoDepth !== undefined) nextSource.vibratoDepth = m.vibratoDepth;
+        if (m.vibratoRate !== undefined) nextSource.vibratoRate = m.vibratoRate;
+        if (m.glide !== undefined) nextSource.glide = m.glide;
+        if (m.golden !== undefined) nextSource.golden = m.golden;
+
+        let nextArtic = { ...s.artic };
+        if (m.vowelX !== undefined && m.vowelY !== undefined) {
+          nextArtic = { ...nextArtic, ...blendCornerVowel(nextBody, m.vowelX, m.vowelY) };
+        }
+        if (m.velum !== undefined) nextArtic.velum = m.velum;
+        if (m.epilarynx !== undefined) nextArtic.epilarynx = m.epilarynx;
+        if (m.larynx !== undefined) nextArtic.larynx = m.larynx;
+
+        const nextEngine =
+          m.engineKind !== undefined && ENGINES[m.engineKind] ? ENGINES[m.engineKind] : s.engineKind;
+
+        useStore.setState({
+          body: nextBody,
+          engineKind: nextEngine,
+          source: nextSource,
+          artic: nextArtic,
+          volume: m.volume ?? s.volume,
+        });
+      } finally {
+        suppressEcho = false;
+      }
+    },
+    onRestore: (stateJson) => {
+      if (!stateJson) return;
+      suppressEcho = true;
+      try {
+        const saved = JSON.parse(stateJson) as Partial<{
+          mode: Mode;
+          view: ViewOptions;
+          body: BodyMix;
+          engineKind: EngineKind;
+          source: VoiceSource;
+          artic: HumanArtic;
+          tipFree: boolean;
+          volume: number;
+          harmony: string[];
+          fx: FxState;
+          creature: string;
+          cparams: Record<string, Record<string, number>>;
+          keyCall: string | null;
+          beat: BeatState;
+          mic: boolean;
+        }>;
+        const s = useStore.getState();
+        useStore.setState({
+          mode: saved.mode ?? s.mode,
+          view: saved.view ? { ...s.view, ...saved.view } : s.view,
+          body: saved.body ?? s.body,
+          engineKind: saved.engineKind ?? s.engineKind,
+          source: saved.source ? { ...s.source, ...saved.source } : s.source,
+          artic: saved.artic ? { ...s.artic, ...saved.artic } : s.artic,
+          tipFree: saved.tipFree ?? s.tipFree,
+          volume: saved.volume ?? s.volume,
+          harmony: saved.harmony ?? s.harmony,
+          fx: saved.fx ?? s.fx,
+          creature: saved.creature ?? s.creature,
+          cparams: saved.cparams ?? s.cparams,
+          keyCall: saved.keyCall ?? s.keyCall,
+          beat: saved.beat ? { ...s.beat, ...saved.beat, playing: false } : s.beat,
+          mic: saved.mic ?? s.mic,
+        });
+        // Push restored patch into DSP engine
+        const cur = useStore.getState();
+        engine.setVolume(cur.volume);
+        engine.setBody(cur.body);
+        engine.setEngine(ENGINES.indexOf(cur.engineKind));
+        engine.setSource(cur.source);
+        engine.setArtic(cur.artic, cur.tipFree);
+        engine.setHarmony(harmonyRatios(cur.harmony));
+        cur.fx.on.forEach((on, i) => engine.setFx(i, { on, params: cur.fx.params[i].map((v, k) => [k, v]) }));
+        if (cur.mode === "bestiary") engine.setCreature(cur.creature, cur.cparams[cur.creature]);
+        else engine.setCreature("human");
+        sendToVst({ type: "vstUiMode", mode: cur.mode, keyCall: cur.keyCall });
+      } catch (e) {
+        console.error("Failed to restore VST state:", e);
+      } finally {
+        suppressEcho = false;
+      }
+    },
+  });
+
+  useStore.subscribe((s) => {
+    const modeKey = `${s.mode}:${s.keyCall ?? ""}`;
+    if (modeKey !== lastModeKey) {
+      lastModeKey = modeKey;
+      sendToVst({ type: "vstUiMode", mode: s.mode, keyCall: s.keyCall });
+    }
+    if (suppressEcho || syncPending) return;
+    syncPending = true;
+    requestAnimationFrame(() => {
+      syncPending = false;
+      const cur = useStore.getState();
+      const persisted = JSON.stringify({
+        mode: cur.mode,
+        view: cur.view,
+        body: cur.body,
+        engineKind: cur.engineKind,
+        source: cur.source,
+        artic: cur.artic,
+        tipFree: cur.tipFree,
+        volume: cur.volume,
+        harmony: cur.harmony,
+        fx: cur.fx,
+        creature: cur.creature,
+        cparams: cur.cparams,
+        keyCall: cur.keyCall,
+        beat: { ...cur.beat, playing: false },
+        mic: cur.mic,
+      });
+      sendToVst({
+        type: "vstSyncHost",
+        stateJson: persisted,
+        engineKind: ENGINES.indexOf(cur.engineKind),
+        bodyFemale: cur.body.female,
+        bodyChild: cur.body.child,
+        pressure: cur.source.pressure,
+        breathiness: cur.source.breathiness,
+        tension: cur.source.tension,
+        brightness: cur.source.brightness,
+        fry: cur.source.fry,
+        roughness: cur.source.roughness,
+        voiced: cur.source.voiced,
+        vibratoDepth: cur.source.vibratoDepth,
+        vibratoRate: cur.source.vibratoRate,
+        glide: cur.source.glide,
+        golden: cur.source.golden,
+        velum: cur.artic.velum,
+        epilarynx: cur.artic.epilarynx,
+        larynx: cur.artic.larynx,
+        volume: cur.volume,
+      });
+    });
+  });
+}

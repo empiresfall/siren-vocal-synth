@@ -4,6 +4,8 @@
  * channels sounds until the last of them lets go. All-notes-off and unplugging release what
  * that input (channel) was holding.
  */
+import { isVstPlugin } from "../audio/vstBridge.ts";
+
 export type MidiStatus = "off" | "connecting" | "on" | "unsupported" | "denied";
 
 export interface MidiHandlers {
@@ -13,7 +15,8 @@ export interface MidiHandlers {
   inputs: (names: string[]) => void;
 }
 
-export const midiSupported = (): boolean => typeof navigator !== "undefined" && typeof navigator.requestMIDIAccess === "function";
+export const midiSupported = (): boolean =>
+  isVstPlugin || (typeof navigator !== "undefined" && typeof navigator.requestMIDIAccess === "function");
 
 let handlers: MidiHandlers | null = null;
 let access: MIDIAccess | null = null;
@@ -69,6 +72,10 @@ function attach(a: MIDIAccess): void {
 
 /** Ask for MIDI access and listen (one request at a time; resolves when connected). */
 export function connectMidi(h: MidiHandlers): Promise<void> {
+  if (isVstPlugin) {
+    h.inputs(["Ableton Live"]);
+    return Promise.resolve();
+  }
   handlers = h;
   if (access) return Promise.resolve();
   if (pending) return pending;

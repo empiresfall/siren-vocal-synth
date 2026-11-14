@@ -3050,3 +3050,10 @@ a.chip.take {
   padding: 4px 7px;
   letter-spacing: 0.1em;
 }
+
+/* ---------- native DAW VST3/CLAP webview polish */
+.siren-vst,
+.siren-vst *:not(input):not(textarea) {
+  -webkit-user-select: none;
+  user-select: none;
+}
