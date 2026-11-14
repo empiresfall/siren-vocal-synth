@@ -779,7 +779,7 @@ impl Default for SirenPlugin {
 impl Plugin for SirenPlugin {
     const NAME: &'static str = "SIREN Vocal Synth";
     const VENDOR: &'static str = "CHIMERA";
-    const URL: &'static str = "https://github.com/empiresfall/siren-vocal-synth";
+    const URL: &'static str = "https://siren-vocal-synth.vercel.app";
     const EMAIL: &'static str = "siren@chimera.audio";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 

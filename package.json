@@ -1,8 +1,13 @@
 {
-  "name": "chimera-voice",
+  "name": "siren-vocal-synth",
   "private": true,
   "version": "0.1.0",
   "license": "MIT",
+  "homepage": "https://siren-vocal-synth.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/empiresfall/siren-vocal-synth.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "bun run wasm && vite --host 127.0.0.1",
@@ -22,13 +27,13 @@
     "zustand": "5.0.16"
   },
   "devDependencies": {
+    "typescript": "7.0.2",
     "@types/bun": "1.4.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/three": "0.186.0",
     "@vitejs/plugin-react": "6.2.1",
     "playwright-core": "1.64.1",
-    "typescript": "7.0.2",
     "vite": "8.3.6"
   }
 }

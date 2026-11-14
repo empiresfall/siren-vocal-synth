@@ -1,6 +1,12 @@
 # SIREN
 
-**Live Synth:** [siren-vocal-synth.vercel.app](https://siren-vocal-synth.vercel.app) · **Instagram:** [@vibecoding_news](https://www.instagram.com/vibecoding_news/) · **GitHub:** [empiresfall/siren-vocal-synth](https://github.com/empiresfall/siren-vocal-synth)
+[![Live Demo on Vercel](https://img.shields.io/badge/Live_Synth-siren--vocal--synth.vercel.app-ffd24a?style=for-the-badge&logo=vercel&logoColor=black)](https://siren-vocal-synth.vercel.app)
+[![Instagram @vibecoding_news](https://img.shields.io/badge/Instagram-%40vibecoding__news-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://www.instagram.com/vibecoding_news/)
+[![Ableton VST3 Release](https://img.shields.io/badge/macOS_VST3_%2F_CLAP-Download_Release-4fb6f2?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/empiresfall/siren-vocal-synth/releases/latest)
+
+- **Live Web App (Vercel):** https://siren-vocal-synth.vercel.app
+- **Instagram:** https://www.instagram.com/vibecoding_news/ (`@vibecoding_news`)
+- **GitHub Repository:** https://github.com/empiresfall/siren-vocal-synth
 
 > **SIREN** is a multi-engine vocal, choir, beatbox, and creature synthesizer (WebAssembly +
 > native Ableton Live VST3/CLAP plugin), built for [**Vibe Coding News**](https://www.instagram.com/vibecoding_news/)
@@ -10,16 +16,16 @@
 
 A physical-modeling voice synthesizer in the browser and DAW. Every sound comes from a simulated
 airway (lungs, vocal folds or syrinx, a branched vocal tract, lips, nose), not from samples.
-The engine is Rust, compiled to WebAssembly for an AudioWorklet and to native macOS universal
-binaries for the VST3/CLAP plugin, tests, and the `chimera` CLI.
+The engine is Rust, compiled to WebAssembly for an AudioWorklet and to native macOS bundles
+for the Ableton Live VST3/CLAP plugin, tests, and the `chimera` CLI.
 
 ## Vision & scope
 
 1. **One instrument**: a physically modeled voice (lungs, vocal folds, throat, mouth). No
    samples, no neural audio.
 2. **The web app is the primary surface**: anyone should be able to make songs in it without
-   an LLM's help. Mobile is the likely next surface. The native DAW plugin (VST3/CLAP) ships
-   alongside it in `crates/chimera-vst`.
+   an LLM's help ([siren-vocal-synth.vercel.app](https://siren-vocal-synth.vercel.app)). Mobile is
+   the likely next surface. The native DAW plugin (VST3/CLAP) ships alongside it in `crates/chimera-vst`.
 3. **More realistic without losing what it is**: the robotic, primitive sound people like today
    stays available, and every realism change is checked by ear against it.
 4. **Languages enter through one shared front-end design**, not one-off hacks. Each needs a
@@ -68,7 +74,40 @@ binaries for the VST3/CLAP plugin, tests, and the `chimera` CLI.
 Checks for these: `cargo test -p chimera --test lite_engines --test creatures_extra --test fx --test russian`,
 `cargo test -p chimera-vst`, and `bun tools/e2e-voices.ts` against `bun run preview`.
 
-## What it does
+## Ableton Live Setup on macOS (VST3)
+
+### Option A — Quick Install from GitHub Releases (Apple Silicon Mac, no dev tools needed)
+
+1. Download **`Siren-macOS-arm64-VST3.zip`** from [GitHub Releases](https://github.com/empiresfall/siren-vocal-synth/releases/latest) and unzip it.
+2. Copy `Siren.vst3` into your macOS VST3 folder and clear macOS Gatekeeper quarantine:
+   ```sh
+   mkdir -p ~/Library/Audio/Plug-Ins/VST3
+   cp -R ~/Downloads/Siren.vst3 ~/Library/Audio/Plug-Ins/VST3/
+   xattr -cr ~/Library/Audio/Plug-Ins/VST3/Siren.vst3
+   codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/VST3/Siren.vst3
+   ```
+3. Open **Ableton Live → Settings (`⌘,`) → Plug-Ins**:
+   - Turn **ON** `Use VST3 Plug-In System Folders`
+   - Click **Rescan**
+4. Load **Plug-Ins → VST3 → CHIMERA → SIREN Vocal Synth** onto a MIDI track!
+
+### Option B — Build & Install from Source (Apple Silicon or Intel Mac)
+
+1. Install Xcode Command Line Tools and Rust:
+   ```sh
+   xcode-select --install
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+   source "$HOME/.cargo/env"
+   ```
+2. Clone the repo and run the one-step VST3 builder/installer:
+   ```sh
+   git clone https://github.com/empiresfall/siren-vocal-synth.git
+   cd siren-vocal-synth
+   ./tools/build-vst.sh --install
+   ```
+3. In **Ableton Live → Settings (`⌘,`) → Plug-Ins**, enable **Use VST3 Plug-In System Folders**, click **Rescan**, and drop **CHIMERA → SIREN Vocal Synth** onto any MIDI track.
+
+## What the Web App does
 
 - **Play**: drag the tongue, lips and jaw in a live cutaway of the head; vowel pad, encoders,
   computer keyboard and Web MIDI.
@@ -82,7 +121,7 @@ Checks for these: `cargo test -p chimera --test lite_engines --test creatures_ex
 Male, female and child bodies blend continuously. Everything on screen animates from live
 engine state: pressure in the airway, airflow, the vocal folds, spectra and formants.
 
-## Run it
+## Run Web App Locally
 
 Needs Rust with the `wasm32-unknown-unknown` target, and Bun.
 
@@ -92,15 +131,8 @@ bun run dev        # builds the wasm, then Vite on 127.0.0.1:5317
 bun run test       # wasm build, cargo test --workspace, bun test tests
 ```
 
-Build & install the native **Ableton Live VST3 / CLAP plugin** (macOS universal `arm64` + `x86_64`):
-
-```sh
-bun run build:vst     # bundles dist-vst/Siren.vst3 and dist-vst/Siren.clap
-bun run install:vst   # builds, codesigns, and installs into ~/Library/Audio/Plug-Ins/{VST3,CLAP}
-```
-
 The AudioWorklet needs a secure context, so open it on localhost or over HTTPS (for example
-`tailscale serve`). Vercel builds it with `vercel.json`.
+`tailscale serve`). Vercel builds it automatically via `vercel.json` at [siren-vocal-synth.vercel.app](https://siren-vocal-synth.vercel.app).
 
 Offline renders and measurement:
 
@@ -132,8 +164,8 @@ Agents: see [AGENTS.md](AGENTS.md).
 
 ## Links & Credits
 
+- **Live Web Synthesizer (Vercel):** [siren-vocal-synth.vercel.app](https://siren-vocal-synth.vercel.app)
 - **Instagram — Vibe Coding News:** [@vibecoding_news](https://www.instagram.com/vibecoding_news/)
-- **Live Web Synthesizer:** [siren-vocal-synth.vercel.app](https://siren-vocal-synth.vercel.app)
 - **Upstream Engine:** [jamesondh/chimera-vocal-synth](https://github.com/jamesondh/chimera-vocal-synth) by Jameson Hodge (MIT)
 
 ## License

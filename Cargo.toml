@@ -6,6 +6,8 @@ members = ["crates/chimera", "crates/chimera-wasm", "crates/chimera-cli", "crate
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+homepage = "https://siren-vocal-synth.vercel.app"
+repository = "https://github.com/empiresfall/siren-vocal-synth"
 
 [profile.release]
 opt-level = 3
